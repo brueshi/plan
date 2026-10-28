@@ -20,13 +20,35 @@ GitHub task list syntax, with one addition for work in progress:
 
 Task-like lines inside fenced code blocks are ignored.
 
+## Usage
+
+```sh
+plan                          # PLAN.md in the current directory
+plan docs/design.md           # every task in a file
+plan docs/design.md#rollout   # only the tasks under one heading
+```
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, arrows | Move |
+| `gg` / `G` | Top / bottom |
+| `space` or `x` | Toggle done |
+| `~` | Toggle in progress |
+| `a` / `A` | Add a task below / add a subtask |
+| `e` or `enter` | Edit |
+| `dd` | Delete (asks first when the task has subtasks) |
+| `J` / `K` | Move the task down / up |
+| `q` | Quit |
+
+Edits from agents and editors appear within a third of a second.
+
 ## Status
 
 | Stage | Scope | State |
 | --- | --- | --- |
 | 1 | Task list parser and atomic, locked file updates | Done |
-| 2 | Checklist view (Bubble Tea) with live reload | Next |
-| 3 | Rex integration: keybinding, tab progress, send to agent | Planned |
+| 2 | Checklist view (Bubble Tea) with live reload | Done |
+| 3 | Rex integration: keybinding, tab progress, send to agent | Next |
 | 4 | Agent integration: `plan` CLI, skill, prompt hook | Planned |
 
 ## Development
