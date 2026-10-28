@@ -222,13 +222,17 @@ func TestStaleItemIsRejected(t *testing.T) {
 
 func TestSetText(t *testing.T) {
 	d := Parse([]byte("  * [x] Old text   \n"))
-	if err := d.SetText(mustFind(t, d, d.Whole(), "old"), "  New text "); err != nil {
+	it, err := d.SetText(mustFind(t, d, d.Whole(), "old"), "  New text ")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := string(d.Bytes()); got != "  * [x] New text\n" {
 		t.Fatalf("got %q", got)
 	}
-	if err := d.SetText(mustFind(t, d, d.Whole(), "new"), "two\nlines"); err == nil {
+	if it.Text != "New text" {
+		t.Fatalf("returned item %q", it.Text)
+	}
+	if _, err := d.SetText(it, "two\nlines"); err == nil {
 		t.Fatal("multi-line text should be rejected")
 	}
 }
@@ -344,33 +348,48 @@ func TestDeleteLastLineKeepsEndingStyle(t *testing.T) {
 func TestMove(t *testing.T) {
 	src := "- [ ] A\n  - [ ] A1\n\n- [ ] B\n- [ ] C"
 	d := Parse([]byte(src))
-	if err := d.Move(mustFind(t, d, d.Whole(), "B"), -1); err != nil {
+	moved, err := d.Move(mustFind(t, d, d.Whole(), "B"), -1)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := string(d.Bytes()); got != "- [ ] B\n\n- [ ] A\n  - [ ] A1\n- [ ] C" {
 		t.Fatalf("move up got %q", got)
 	}
+	if moved.Text != "B" || moved.Line != 0 {
+		t.Fatalf("returned %q on line %d, want B on line 0", moved.Text, moved.Line)
+	}
 
 	d = Parse([]byte(src))
-	if err := d.Move(mustFind(t, d, d.Whole(), "B"), 1); err != nil {
+	if moved, err = d.Move(mustFind(t, d, d.Whole(), "B"), 1); err != nil {
 		t.Fatal(err)
 	}
 	if got := string(d.Bytes()); got != "- [ ] A\n  - [ ] A1\n\n- [ ] C\n- [ ] B" {
 		t.Fatalf("move down got %q", got)
 	}
+	if moved.Text != "B" || moved.Line != 4 {
+		t.Fatalf("returned %q on line %d, want B on line 4", moved.Text, moved.Line)
+	}
 
 	d = Parse([]byte(src))
-	if err := d.Move(mustFind(t, d, d.Whole(), "A"), -1); !errors.Is(err, ErrCannotMove) {
+	if moved, err = d.Move(mustFind(t, d, d.Whole(), "A"), 1); err != nil {
+		t.Fatal(err)
+	}
+	if moved.Text != "A" || moved.Line != 2 {
+		t.Fatalf("subtree move returned %q on line %d, want A on line 2", moved.Text, moved.Line)
+	}
+
+	d = Parse([]byte(src))
+	if _, err := d.Move(mustFind(t, d, d.Whole(), "A"), -1); !errors.Is(err, ErrCannotMove) {
 		t.Fatalf("err = %v, want ErrCannotMove", err)
 	}
-	if err := d.Move(mustFind(t, d, d.Whole(), "A1"), 1); !errors.Is(err, ErrCannotMove) {
+	if _, err := d.Move(mustFind(t, d, d.Whole(), "A1"), 1); !errors.Is(err, ErrCannotMove) {
 		t.Fatalf("only child moved: err = %v", err)
 	}
 }
 
 func TestMoveStaysInsideItsList(t *testing.T) {
 	d := Parse([]byte("## One\n- [ ] A\n## Two\n- [ ] B\n"))
-	if err := d.Move(mustFind(t, d, d.Whole(), "A"), 1); !errors.Is(err, ErrCannotMove) {
+	if _, err := d.Move(mustFind(t, d, d.Whole(), "A"), 1); !errors.Is(err, ErrCannotMove) {
 		t.Fatalf("err = %v, want ErrCannotMove across headings", err)
 	}
 }

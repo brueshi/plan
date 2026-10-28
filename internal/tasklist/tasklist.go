@@ -422,19 +422,20 @@ func (d *Document) SetState(it Item, s State) error {
 	return nil
 }
 
-// SetText replaces an item's text, keeping its bullet and marker.
-func (d *Document) SetText(it Item, text string) error {
+// SetText replaces an item's text, keeping its bullet and marker, and
+// returns the updated item.
+func (d *Document) SetText(it Item, text string) (Item, error) {
 	text, err := cleanText(text)
 	if err != nil {
-		return err
+		return Item{}, err
 	}
 	c, err := d.current(it)
 	if err != nil {
-		return err
+		return Item{}, err
 	}
 	d.lines[c.Line].text = d.lines[c.Line].text[:c.closeAt+1] + " " + text
 	d.index()
-	return nil
+	return d.itemAt(c.Line)
 }
 
 // Insert adds a todo after an item: as the sibling that follows its
@@ -513,11 +514,12 @@ func (d *Document) Delete(it Item) error {
 }
 
 // Move swaps an item's subtree with the previous (delta < 0) or next
-// (delta > 0) sibling's. Lines between the two stay where they are.
-func (d *Document) Move(it Item, delta int) error {
+// (delta > 0) sibling's, and returns the item at its new position.
+// Lines between the two stay where they are.
+func (d *Document) Move(it Item, delta int) (Item, error) {
 	c, err := d.current(it)
 	if err != nil {
-		return err
+		return Item{}, err
 	}
 	var sib *Item
 	for i := range d.items {
@@ -534,7 +536,7 @@ func (d *Document) Move(it Item, delta int) error {
 		}
 	}
 	if sib == nil {
-		return ErrCannotMove
+		return Item{}, ErrCannotMove
 	}
 	a, b := c, *sib
 	if a.Line > b.Line {
@@ -548,7 +550,13 @@ func (d *Document) Move(it Item, delta int) error {
 		out = append(out, lines[a.Line:a.end+1]...)
 		return append(out, lines[b.end+1:]...)
 	})
-	return nil
+	// Moving up lands where the earlier block began. Moving
+	// down lands after the later block and the gap.
+	newLine := a.Line
+	if c.Line == a.Line {
+		newLine = a.Line + b.end - a.end
+	}
+	return d.itemAt(newLine)
 }
 
 func (d *Document) firstChild(it Item) (Item, bool) {
