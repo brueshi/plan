@@ -23,7 +23,7 @@ Task-like lines inside fenced code blocks are ignored.
 ## Usage
 
 ```sh
-plan                          # this session's active plan, or the repo's PLAN.md
+plan                          # follow this session's active plan, or the repo's PLAN.md
 plan docs/design.md           # every task in a file
 plan docs/design.md#rollout   # only the tasks under one heading
 plan use docs/design.md#rollout   # make it the Rex session's active plan
@@ -53,6 +53,11 @@ Edits from agents and editors appear within a third of a second.
 
 - The view reports its progress to Rex as program status: idle with a
   count while tasks remain, and done when the last one is checked.
+- With no file named, the view follows the session's active plan. It
+  switches when an agent runs `plan new` or `plan use`, and shows a
+  waiting screen until a plan exists.
+- `w` on the waiting screen asks the agent beside it to write the plan
+  from its conversation into a scratch plan, which then appears.
 - `s` types the task into the nearest Claude Code pane: the same tab
   first, then the session. It refuses when that agent is waiting on a
   prompt, where Enter would answer it.
@@ -66,7 +71,7 @@ Edits from agents and editors appear within a third of a second.
 | 1 | Task list parser and atomic, locked file updates | Done |
 | 2 | Checklist view (Bubble Tea) with live reload | Done |
 | 3 | Rex integration: active plans, tab status, send to agent | Done |
-| 4 | Agent integration: `plan` CLI, skill, prompt hook | Next |
+| 4 | Follow the active plan; ask the agent to write its plan | Done |
 
 ## Development
 

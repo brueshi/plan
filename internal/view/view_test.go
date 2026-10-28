@@ -21,7 +21,7 @@ func isolate(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 }
 
-func newModel(t *testing.T, content, section string) (Model, string) {
+func openPlan(t *testing.T, content, section string) (Model, string) {
 	t.Helper()
 	isolate(t)
 	path := filepath.Join(t.TempDir(), "PLAN.md")
@@ -108,7 +108,7 @@ func cursorText(m Model) string {
 }
 
 func TestToggleStates(t *testing.T) {
-	m, path := newModel(t, "- [ ] A\n- [ ] B\n", "")
+	m, path := openPlan(t, "- [ ] A\n- [ ] B\n", "")
 
 	m = press(t, m, "j", "space")
 	if got := fileText(t, path); got != "- [ ] A\n- [x] B\n" {
@@ -125,7 +125,7 @@ func TestToggleStates(t *testing.T) {
 }
 
 func TestAddSiblingThenSubtask(t *testing.T) {
-	m, path := newModel(t, "- [ ] A\n  - [ ] A1\n- [ ] B\n", "")
+	m, path := openPlan(t, "- [ ] A\n  - [ ] A1\n- [ ] B\n", "")
 
 	m = press(t, m, "a")
 	m = typeText(t, m, "New task")
@@ -150,7 +150,7 @@ func TestAddSiblingThenSubtask(t *testing.T) {
 }
 
 func TestAddToEmptyPlan(t *testing.T) {
-	m, path := newModel(t, "# Plan\n", "")
+	m, path := openPlan(t, "# Plan\n", "")
 	if !strings.Contains(screen(m), "No tasks yet") {
 		t.Fatalf("empty state missing:\n%s", screen(m))
 	}
@@ -163,7 +163,7 @@ func TestAddToEmptyPlan(t *testing.T) {
 }
 
 func TestEditAndCancel(t *testing.T) {
-	m, path := newModel(t, "- [ ] Draft\n", "")
+	m, path := openPlan(t, "- [ ] Draft\n", "")
 
 	m = press(t, m, "e")
 	m = typeText(t, m, " v2")
@@ -184,7 +184,7 @@ func TestEditAndCancel(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	m, path := newModel(t, "- [ ] A\n  - [ ] A1\n- [ ] B\n", "")
+	m, path := openPlan(t, "- [ ] A\n  - [ ] A1\n- [ ] B\n", "")
 
 	m = press(t, m, "G", "d", "d")
 	if got := fileText(t, path); got != "- [ ] A\n  - [ ] A1\n" {
@@ -207,7 +207,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestMoveKeepsCursorOnItem(t *testing.T) {
-	m, path := newModel(t, "- [ ] A\n- [ ] B\n- [ ] C\n", "")
+	m, path := openPlan(t, "- [ ] A\n- [ ] B\n- [ ] C\n", "")
 
 	m = press(t, m, "J")
 	if got := fileText(t, path); got != "- [ ] B\n- [ ] A\n- [ ] C\n" {
@@ -227,7 +227,7 @@ func TestMoveKeepsCursorOnItem(t *testing.T) {
 }
 
 func TestOutsideEditReloadsAndKeepsCursor(t *testing.T) {
-	m, path := newModel(t, "- [ ] A\n- [ ] B\n", "")
+	m, path := openPlan(t, "- [ ] A\n- [ ] B\n", "")
 	m = press(t, m, "j")
 
 	if msg := m.checkFile()(); msg != nil {
@@ -254,7 +254,7 @@ func TestOutsideEditReloadsAndKeepsCursor(t *testing.T) {
 }
 
 func TestEditAfterOutsideChangeUsesFreshFile(t *testing.T) {
-	m, path := newModel(t, "- [ ] A\n- [ ] B\n", "")
+	m, path := openPlan(t, "- [ ] A\n- [ ] B\n", "")
 	m = press(t, m, "j")
 
 	// The file changes before the view's next poll.
@@ -269,7 +269,7 @@ func TestEditAfterOutsideChangeUsesFreshFile(t *testing.T) {
 
 func TestSectionScope(t *testing.T) {
 	src := "# Doc\n\n## Plan\n- [ ] In plan\n\n## Notes\n- [ ] Elsewhere\n"
-	m, path := newModel(t, src, "plan")
+	m, path := openPlan(t, src, "plan")
 
 	if len(m.items) != 1 || !strings.Contains(screen(m), "PLAN.md › Plan") {
 		t.Fatalf("section view wrong:\n%s", screen(m))
@@ -295,7 +295,7 @@ func TestMissingSectionFailsAtStart(t *testing.T) {
 }
 
 func TestErrorShowsInFooter(t *testing.T) {
-	m, path := newModel(t, "- [ ] A\n", "")
+	m, path := openPlan(t, "- [ ] A\n", "")
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestErrorShowsInFooter(t *testing.T) {
 
 func TestRender(t *testing.T) {
 	long := strings.Repeat("word ", 20)
-	m, _ := newModel(t, "- [x] Done\n- [ ] "+long+"\n", "")
+	m, _ := openPlan(t, "- [x] Done\n- [ ] "+long+"\n", "")
 	m = update(t, m, tea.WindowSizeMsg{Width: 40, Height: 20})
 	out := screen(m)
 
@@ -339,7 +339,7 @@ func TestScrollKeepsCursorVisible(t *testing.T) {
 	for i := range 30 {
 		fmt.Fprintf(&src, "- [ ] task %02d\n", i)
 	}
-	m, _ := newModel(t, src.String(), "")
+	m, _ := openPlan(t, src.String(), "")
 	m = update(t, m, tea.WindowSizeMsg{Width: 40, Height: 10})
 
 	m = press(t, m, "G")
@@ -375,7 +375,7 @@ func fakeAgent(state string, typed *[][]string) func(context.Context, ...string)
 }
 
 func TestSendToAgent(t *testing.T) {
-	m, path := newModel(t, "## Rollout\n- [ ] A\n- [ ] Ship it\n", "Rollout")
+	m, path := openPlan(t, "## Rollout\n- [ ] A\n- [ ] Ship it\n", "Rollout")
 	var typed [][]string
 	m.rexSession, m.rexBlock, m.runRex = "s", "self", fakeAgent("idle", &typed)
 
@@ -390,7 +390,7 @@ func TestSendToAgent(t *testing.T) {
 }
 
 func TestSendRefusesBlockedAgent(t *testing.T) {
-	m, _ := newModel(t, "- [ ] A\n", "")
+	m, _ := openPlan(t, "- [ ] A\n", "")
 	var typed [][]string
 	m.rexSession, m.rexBlock, m.runRex = "s", "self", fakeAgent("blocked", &typed)
 
@@ -401,7 +401,7 @@ func TestSendRefusesBlockedAgent(t *testing.T) {
 }
 
 func TestSendOutsideRex(t *testing.T) {
-	m, _ := newModel(t, "- [ ] A\n", "")
+	m, _ := openPlan(t, "- [ ] A\n", "")
 	m.rexSession = ""
 	if m = press(t, m, "s"); !strings.Contains(screen(m), "not running in Rex") {
 		t.Fatalf("no error:\n%s", screen(m))
@@ -409,12 +409,12 @@ func TestSendOutsideRex(t *testing.T) {
 }
 
 func TestProgramStatus(t *testing.T) {
-	m, _ := newModel(t, "- [x] A\n", "")
+	m, _ := openPlan(t, "- [x] A\n", "")
 	if ps := m.View().ProgramStatus; ps.State != tea.ProgramStateIdle {
 		t.Fatalf("opening a finished plan reported %q, want idle", ps.State)
 	}
 
-	m, _ = newModel(t, "- [x] A\n- [ ] B\n", "")
+	m, _ = openPlan(t, "- [x] A\n- [ ] B\n", "")
 	ps := m.View().ProgramStatus
 	if ps.State != tea.ProgramStateIdle || ps.Message != "1 of 2 tasks done" || ps.App != "plan" {
 		t.Fatalf("in progress: %+v", ps)
@@ -431,7 +431,7 @@ func TestProgramStatus(t *testing.T) {
 }
 
 func TestQuit(t *testing.T) {
-	m, _ := newModel(t, "- [ ] A\n", "")
+	m, _ := openPlan(t, "- [ ] A\n", "")
 	_, cmd := m.Update(keyMsg("q"))
 	if cmd == nil {
 		t.Fatal("q returned no command")

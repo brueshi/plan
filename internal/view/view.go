@@ -2,6 +2,9 @@
 // plan file, optionally narrowed to a heading. Every edit is a fresh,
 // locked read-modify-write of the file, and outside changes are picked up
 // by polling, so the view and agents can edit the same plan at once.
+//
+// A view can also follow the session's active plan, switching when an
+// agent starts a new one, and waiting when there is none yet.
 package view
 
 import (
@@ -16,9 +19,18 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/brueshi/plan/internal/active"
 	"github.com/brueshi/plan/internal/rexctl"
 	"github.com/brueshi/plan/internal/tasklist"
 )
+
+// writePlanPrompt asks the agent to turn the plan from its conversation
+// into a scratch plan. plan new makes it the session's active plan,
+// which a following view then switches to.
+const writePlanPrompt = "Write the plan we agreed on to a checklist I can watch: " +
+	"run `plan new \"<short title>\"`, then write one `- [ ]` task per stage into " +
+	"the file it prints, with the steps as indented subtasks. Mark finished " +
+	"stages `[x]` and the current one `[~]`, and keep it updated as you finish each step."
 
 const (
 	// pollInterval is how often the file is checked for outside edits.
@@ -39,10 +51,13 @@ const (
 
 // Model is the checklist view.
 type Model struct {
-	path    string
+	path    string // empty while waiting for a plan
 	section string // heading name, empty for the whole file
 
-	doc   *tasklist.Document
+	// follow names the plan to show. Nil fixes the view on path.
+	follow func() (active.Target, error)
+
+	doc   *tasklist.Document // nil while waiting for a plan
 	sec   tasklist.Section
 	items []tasklist.Item
 	info  os.FileInfo // nil forces a reload on the next poll
@@ -68,34 +83,22 @@ type Model struct {
 type tickMsg struct{}
 
 type sentMsg struct {
-	task string
-	err  error
+	notice string
+	err    error
 }
 
 // loadedMsg carries a new revision of the plan, from an edit or from
 // a poll that saw the file change.
 type loadedMsg struct {
-	doc   *tasklist.Document
-	info  os.FileInfo
-	focus *tasklist.Ref // item to put the cursor on
-	err   error
+	doc     *tasklist.Document
+	info    os.FileInfo
+	focus   *tasklist.Ref  // item to put the cursor on
+	target  *active.Target // the plan doc came from, when polled
+	waiting bool           // the followed plan is gone
+	err     error
 }
 
-// New loads the plan at path, narrowed to section when it isn't empty.
-func New(path, section string) (Model, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return Model{}, err
-	}
-	doc, err := tasklist.Load(path)
-	if err != nil {
-		return Model{}, err
-	}
-	sec, err := doc.Section(section)
-	if err != nil {
-		return Model{}, err
-	}
-
+func newModel() Model {
 	input := textinput.New()
 	styles := input.Styles()
 	// A steady cursor keeps the input free of timers.
@@ -103,17 +106,44 @@ func New(path, section string) (Model, error) {
 	input.SetStyles(styles)
 
 	return Model{
-		path:       path,
-		section:    section,
-		doc:        doc,
-		sec:        sec,
-		items:      doc.Items(sec),
-		info:       info,
 		input:      input,
 		rexSession: os.Getenv("REX_SESSION"),
 		rexBlock:   os.Getenv("REX_BLOCK"),
 		runRex:     rexctl.CLI,
-	}, nil
+	}
+}
+
+// New shows the plan at path, narrowed to section when it isn't empty.
+func New(path, section string) (Model, error) {
+	m := newModel().loaded(load(active.Target{Path: path, Section: section}, nil))
+	if m.err != nil {
+		return Model{}, m.err
+	}
+	return m, nil
+}
+
+// Follow shows the plan resolve names and switches when that changes,
+// as when an agent runs plan new. With no plan yet it shows a waiting
+// screen rather than failing, so it can be opened first.
+func Follow(resolve func() (active.Target, error)) Model {
+	m := newModel()
+	m.follow = resolve
+	if msg, ok := m.checkFile()().(loadedMsg); ok {
+		m = m.loaded(msg)
+	}
+	return m
+}
+
+func load(t active.Target, focus *tasklist.Ref) loadedMsg {
+	info, err := os.Stat(t.Path)
+	if err != nil {
+		return loadedMsg{err: err}
+	}
+	doc, err := tasklist.Load(t.Path)
+	if err != nil {
+		return loadedMsg{err: err}
+	}
+	return loadedMsg{doc: doc, info: info, focus: focus, target: &t}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -135,10 +165,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		return m.loaded(msg).scrolled(), nil
 	case sentMsg:
+		m.err, m.notice = msg.err, msg.notice
 		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.notice = "Sent to claude: " + msg.task
+			m.notice = ""
 		}
 		return m, nil
 	case tea.KeyPressMsg:
@@ -164,12 +193,30 @@ func (m Model) loaded(msg loadedMsg) Model {
 		m.err = msg.err
 		return m
 	}
-	sec, err := msg.doc.Section(m.section)
+	if msg.waiting {
+		m = m.reset()
+		m.path, m.section = "", ""
+		return m
+	}
+
+	section := m.section
+	if msg.target != nil {
+		section = msg.target.Section
+	}
+	sec, err := msg.doc.Section(section)
 	if err != nil {
 		m.err = err
 		return m
 	}
-	prevDone, prevTotal := m.doc.Progress(m.sec)
+	if t := msg.target; t != nil && (t.Path != m.path || t.Section != m.section) {
+		m = m.reset()
+		m.path, m.section = t.Path, t.Section
+	}
+
+	prevDone, prevTotal := 0, 0
+	if m.doc != nil {
+		prevDone, prevTotal = m.doc.Progress(m.sec)
+	}
 	m.doc, m.sec, m.items, m.info, m.err = msg.doc, sec, msg.doc.Items(sec), msg.info, nil
 	done, total := m.doc.Progress(m.sec)
 	switch {
@@ -196,10 +243,38 @@ func (m Model) indexOf(it tasklist.Item) int {
 	return m.cursor
 }
 
-// checkFile reloads the plan when its file changed since the last load.
+// reset clears everything tied to the current plan,
+// for a switch to another plan or to waiting.
+func (m Model) reset() Model {
+	if m.mode != normal {
+		// Never let a half-typed edit land in another plan.
+		m = m.endInput()
+	}
+	m.doc, m.items, m.info = nil, nil, nil
+	m.sec = tasklist.Section{}
+	m.cursor, m.offset, m.chord, m.finished = 0, 0, "", false
+	return m
+}
+
+// checkFile reloads the plan when its file changed since the last load,
+// and, when following, switches when a different plan becomes active.
 func (m Model) checkFile() tea.Cmd {
-	path, prev, focus := m.path, m.info, m.focusRef()
+	path, section, prev, focus, follow := m.path, m.section, m.info, m.focusRef(), m.follow
 	return func() tea.Msg {
+		if follow != nil {
+			t, err := follow()
+			switch {
+			case errors.Is(err, active.ErrNoPlan):
+				if path == "" {
+					return nil
+				}
+				return loadedMsg{waiting: true}
+			case err != nil:
+				return loadedMsg{err: err}
+			case t.Path != path || t.Section != section:
+				return load(t, nil)
+			}
+		}
 		info, err := os.Stat(path)
 		if err != nil {
 			return loadedMsg{err: err}
@@ -208,16 +283,12 @@ func (m Model) checkFile() tea.Cmd {
 			info.ModTime().Equal(prev.ModTime()) && info.Size() == prev.Size() {
 			return nil
 		}
-		doc, err := tasklist.Load(path)
-		if err != nil {
-			return loadedMsg{err: err}
-		}
-		return loadedMsg{doc: doc, info: info, focus: focus}
+		return load(active.Target{Path: path, Section: section}, focus)
 	}
 }
 
 func (m Model) focusRef() *tasklist.Ref {
-	if len(m.items) == 0 {
+	if m.doc == nil || len(m.items) == 0 {
 		return nil
 	}
 	ref := m.doc.RefOf(m.sec, m.items[m.cursor])
@@ -271,6 +342,16 @@ func (m Model) onCursor(op func(*tasklist.Document, tasklist.Item) (*tasklist.It
 
 func (m Model) normalKey(key string) (tea.Model, tea.Cmd) {
 	m.err, m.notice = nil, ""
+	if m.doc == nil {
+		switch key {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "w":
+			return m, m.sendToAgent(writePlanPrompt,
+				"Asked claude to write its plan. It appears here once written.")
+		}
+		return m, nil
+	}
 	if pending := m.chord; pending != "" {
 		m.chord = ""
 		switch {
@@ -358,12 +439,18 @@ func (m Model) send() tea.Cmd {
 		return nil
 	}
 	task := m.items[m.cursor].Text
+	message := fmt.Sprintf("Work on this task from the plan at %s: %s", m.planRef(), task)
+	return m.sendToAgent(message, "Sent to claude: "+task)
+}
+
+// sendToAgent types message into the agent beside this pane, and
+// shows notice once it has gone.
+func (m Model) sendToAgent(message, notice string) tea.Cmd {
 	if m.rexSession == "" {
 		return func() tea.Msg {
 			return sentMsg{err: errors.New("not running in Rex, so there is no agent to send to")}
 		}
 	}
-	message := fmt.Sprintf("Work on this task from the plan at %s: %s", m.planRef(), task)
 	run, session, self := m.runRex, m.rexSession, m.rexBlock
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
@@ -372,7 +459,7 @@ func (m Model) send() tea.Cmd {
 		if err == nil {
 			err = rexctl.Send(ctx, run, session, agent, message)
 		}
-		return sentMsg{task: task, err: err}
+		return sentMsg{notice: notice, err: err}
 	}
 }
 

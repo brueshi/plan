@@ -22,9 +22,10 @@ const usage = `usage:
   plan new TITLE                start a scratch plan and make it active
   plan which                    print the plan that plan would show
 
-With no FILE, plan shows this session's active plan, or PLAN.md at
-the root of the current repo. #HEADING narrows a file to the tasks
-under one heading, matched by its text or by its GitHub anchor.`
+With no FILE, plan follows this session's active plan, or PLAN.md at
+the root of the current repo, and waits for one when there is none.
+#HEADING narrows a file to the tasks under one heading, matched by its
+text or by its GitHub anchor.`
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -83,15 +84,25 @@ func run(args []string, stdout io.Writer) error {
 		return nil
 	}
 
-	t, err := resolve(session, args)
-	if err != nil {
-		return err
+	var m view.Model
+	switch len(args) {
+	case 0:
+		dir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		r := &active.Resolver{Session: session, Dir: dir}
+		m = view.Follow(r.Resolve)
+	case 1:
+		t := active.Parse(args[0])
+		var err error
+		if m, err = view.New(t.Path, t.Section); err != nil {
+			return err
+		}
+	default:
+		return errors.New("too many arguments\n" + usage)
 	}
-	m, err := view.New(t.Path, t.Section)
-	if err != nil {
-		return err
-	}
-	_, err = tea.NewProgram(m).Run()
+	_, err := tea.NewProgram(m).Run()
 	return err
 }
 

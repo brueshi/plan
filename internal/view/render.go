@@ -34,7 +34,10 @@ var (
 	noticeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Green)
 )
 
-const helpText = "space done · ~ doing · a add · A sub · e edit · dd del · J/K move · s send · q quit"
+const (
+	helpText        = "space done · ~ doing · a add · A sub · e edit · dd del · J/K move · s send · q quit"
+	waitingHelpText = "w ask claude for its plan · q quit"
+)
 
 // row is one rendered line of the list and the item it belongs to.
 type row struct {
@@ -53,6 +56,14 @@ func (m Model) View() tea.View {
 // not working, so the tab spinner keeps meaning "an agent is busy".
 // Done is reported only when the last task is checked while open.
 func (m Model) programStatus() *tea.ProgramStatus {
+	if m.doc == nil {
+		return &tea.ProgramStatus{
+			App:     "plan",
+			Title:   m.title(),
+			State:   tea.ProgramStateIdle,
+			Message: "Waiting for a plan",
+		}
+	}
 	done, total := m.doc.Progress(m.sec)
 	ps := &tea.ProgramStatus{
 		App:     "plan",
@@ -68,6 +79,9 @@ func (m Model) programStatus() *tea.ProgramStatus {
 }
 
 func (m Model) title() string {
+	if m.path == "" {
+		return "plan"
+	}
 	title := filepath.Base(m.path)
 	if m.sec.Heading != "" {
 		title += " › " + m.sec.Heading
@@ -76,35 +90,46 @@ func (m Model) title() string {
 }
 
 func (m Model) render() string {
-	var b strings.Builder
-	b.WriteString(m.header())
-	b.WriteByte('\n')
-	b.WriteString(m.rule())
-	b.WriteByte('\n')
-
-	rows := m.rows()
-	visible := m.visibleRows()
-	for i := m.offset; i < len(rows) && i < m.offset+visible; i++ {
-		b.WriteString(rows[i].text)
-		b.WriteByte('\n')
+	body := m.waitingBody()
+	if m.doc != nil {
+		body = append([]string{m.header(), m.rule()}, m.listBody()...)
 	}
-	if len(m.items) == 0 {
-		b.WriteString(dimStyle.Render("  No tasks yet. Press a to add one."))
-		b.WriteByte('\n')
-	}
-
 	// Pin the footer to the bottom of the screen.
-	if m.height > 0 {
-		used := headerRows + min(len(rows), visible) + footerRows
-		if len(m.items) == 0 {
-			used++
-		}
-		b.WriteString(strings.Repeat("\n", max(m.height-used, 0)))
+	for m.height > 0 && len(body) < m.height-footerRows {
+		body = append(body, "")
 	}
-	b.WriteString(m.rule())
-	b.WriteByte('\n')
-	b.WriteString(m.footer())
-	return b.String()
+	return strings.Join(append(body, m.rule(), m.footer()), "\n")
+}
+
+func (m Model) listBody() []string {
+	if len(m.items) == 0 {
+		return []string{dimStyle.Render("  No tasks yet. Press a to add one.")}
+	}
+	rows := m.rows()
+	end := min(len(rows), m.offset+m.visibleRows())
+	body := make([]string, 0, end-m.offset)
+	for _, r := range rows[m.offset:end] {
+		body = append(body, r.text)
+	}
+	return body
+}
+
+func (m Model) waitingBody() []string {
+	lines := []string{
+		"",
+		"  No plan for this session yet.",
+		"",
+		"  " + cursorStyle.Render("w") + "  ask claude to write its plan here",
+		"  " + cursorStyle.Render("q") + "  quit",
+		"",
+		dimStyle.Render(`  Or run plan new "Title", or plan use FILE#HEADING.`),
+		dimStyle.Render("  This pane switches to the plan once it exists."),
+	}
+	body := []string{titleStyle.Render(m.title()), m.rule()}
+	for _, l := range lines {
+		body = append(body, truncate(l, m.width))
+	}
+	return body
 }
 
 func (m Model) header() string {
@@ -142,6 +167,8 @@ func (m Model) footer() string {
 		return errStyle.Render(truncate(m.errText(), m.width))
 	case m.notice != "":
 		return noticeStyle.Render(truncate(m.notice, m.width))
+	case m.doc == nil:
+		return dimStyle.Render(truncate(waitingHelpText, m.width))
 	}
 	return dimStyle.Render(truncate(helpText, m.width))
 }

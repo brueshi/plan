@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brueshi/plan/internal/tasklist"
@@ -128,12 +129,29 @@ func Current(session string) (t Target, ok bool, err error) {
 // Resolve finds the plan for a session and directory: the session's
 // active plan, then PLAN.md at the repo root, then in dir itself.
 func Resolve(session, dir string) (Target, error) {
-	if session != "" {
-		if t, ok, err := Current(session); err != nil || ok {
+	return (&Resolver{Session: session, Dir: dir}).Resolve()
+}
+
+// Resolver resolves repeatedly for one session and directory, as a
+// view following the active plan does several times a second. It runs
+// git once: a pane's directory never changes, so neither does its repo.
+type Resolver struct {
+	Session string
+	Dir     string
+
+	rootOnce sync.Once
+	root     string
+}
+
+// Resolve works like the package-level Resolve.
+func (r *Resolver) Resolve() (Target, error) {
+	if r.Session != "" {
+		if t, ok, err := Current(r.Session); err != nil || ok {
 			return t, err
 		}
 	}
-	for _, base := range []string{repoRoot(dir), dir} {
+	r.rootOnce.Do(func() { r.root = repoRoot(r.Dir) })
+	for _, base := range []string{r.root, r.Dir} {
 		if base == "" {
 			continue
 		}
