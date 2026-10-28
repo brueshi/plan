@@ -5,19 +5,27 @@
 package view
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/brueshi/plan/internal/rexctl"
 	"github.com/brueshi/plan/internal/tasklist"
 )
 
-// pollInterval is how often the file is checked for outside edits.
-const pollInterval = 300 * time.Millisecond
+const (
+	// pollInterval is how often the file is checked for outside edits.
+	pollInterval = 300 * time.Millisecond
+	// sendTimeout bounds the rex calls behind one send.
+	sendTimeout = 5 * time.Second
+)
 
 type mode int
 
@@ -45,11 +53,24 @@ type Model struct {
 	input  textinput.Model
 	chord  string // first key of dd or gg
 	err    error
+	notice string // a confirmation, shown until the next key
+
+	// finished is set when the last open task is checked while the
+	// view is open, so opening a completed plan doesn't announce it.
+	finished bool
+
+	rexSession, rexBlock string
+	runRex               rexctl.Runner
 
 	width, height int
 }
 
 type tickMsg struct{}
+
+type sentMsg struct {
+	task string
+	err  error
+}
 
 // loadedMsg carries a new revision of the plan, from an edit or from
 // a poll that saw the file change.
@@ -82,13 +103,16 @@ func New(path, section string) (Model, error) {
 	input.SetStyles(styles)
 
 	return Model{
-		path:    path,
-		section: section,
-		doc:     doc,
-		sec:     sec,
-		items:   doc.Items(sec),
-		info:    info,
-		input:   input,
+		path:       path,
+		section:    section,
+		doc:        doc,
+		sec:        sec,
+		items:      doc.Items(sec),
+		info:       info,
+		input:      input,
+		rexSession: os.Getenv("REX_SESSION"),
+		rexBlock:   os.Getenv("REX_BLOCK"),
+		runRex:     rexctl.CLI,
 	}, nil
 }
 
@@ -110,6 +134,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.checkFile(), poll())
 	case loadedMsg:
 		return m.loaded(msg).scrolled(), nil
+	case sentMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.notice = "Sent to claude: " + msg.task
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		switch m.mode {
 		case normal:
@@ -138,7 +169,15 @@ func (m Model) loaded(msg loadedMsg) Model {
 		m.err = err
 		return m
 	}
+	prevDone, prevTotal := m.doc.Progress(m.sec)
 	m.doc, m.sec, m.items, m.info, m.err = msg.doc, sec, msg.doc.Items(sec), msg.info, nil
+	done, total := m.doc.Progress(m.sec)
+	switch {
+	case total == 0 || done < total:
+		m.finished = false
+	case prevDone < prevTotal:
+		m.finished = true
+	}
 	if msg.focus != nil {
 		if it, err := m.doc.Locate(m.sec, *msg.focus); err == nil {
 			m.cursor = m.indexOf(it)
@@ -231,7 +270,7 @@ func (m Model) onCursor(op func(*tasklist.Document, tasklist.Item) (*tasklist.It
 }
 
 func (m Model) normalKey(key string) (tea.Model, tea.Cmd) {
-	m.err = nil
+	m.err, m.notice = nil, ""
 	if pending := m.chord; pending != "" {
 		m.chord = ""
 		switch {
@@ -264,6 +303,8 @@ func (m Model) normalKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.toggle(tasklist.Done)
 	case "~":
 		return m, m.toggle(tasklist.InProgress)
+	case "s":
+		return m, m.send()
 	case "J":
 		return m, m.move(1)
 	case "K":
@@ -309,6 +350,43 @@ func (m Model) deleteCursor() tea.Cmd {
 	return m.onCursor(func(d *tasklist.Document, it tasklist.Item) (*tasklist.Item, error) {
 		return nil, d.Delete(it)
 	})
+}
+
+// send asks the agent beside this pane to work on the cursor task.
+func (m Model) send() tea.Cmd {
+	if len(m.items) == 0 {
+		return nil
+	}
+	task := m.items[m.cursor].Text
+	if m.rexSession == "" {
+		return func() tea.Msg {
+			return sentMsg{err: errors.New("not running in Rex, so there is no agent to send to")}
+		}
+	}
+	message := fmt.Sprintf("Work on this task from the plan at %s: %s", m.planRef(), task)
+	run, session, self := m.runRex, m.rexSession, m.rexBlock
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+		defer cancel()
+		agent, err := rexctl.FindAgent(ctx, run, session, self)
+		if err == nil {
+			err = rexctl.Send(ctx, run, session, agent, message)
+		}
+		return sentMsg{task: task, err: err}
+	}
+}
+
+// planRef is an absolute FILE#HEADING, so the agent can
+// find the plan from any working directory.
+func (m Model) planRef() string {
+	path, err := filepath.Abs(m.path)
+	if err != nil {
+		path = m.path
+	}
+	if m.sec.Heading == "" {
+		return path
+	}
+	return path + "#" + m.sec.Heading
 }
 
 func (m Model) hasChildren() bool {

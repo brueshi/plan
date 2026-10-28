@@ -31,9 +31,10 @@ var (
 	cursorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Blue).Bold(true)
 	selectedStyle = lipgloss.NewStyle().Bold(true)
 	errStyle      = lipgloss.NewStyle().Foreground(lipgloss.Red)
+	noticeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Green)
 )
 
-const helpText = "space done · ~ doing · a add · A sub · e edit · dd del · J/K move · q quit"
+const helpText = "space done · ~ doing · a add · A sub · e edit · dd del · J/K move · s send · q quit"
 
 // row is one rendered line of the list and the item it belongs to.
 type row struct {
@@ -44,7 +45,34 @@ type row struct {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
+	v.ProgramStatus = m.programStatus()
 	return v
+}
+
+// programStatus reports progress to Rex. An open plan reports idle,
+// not working, so the tab spinner keeps meaning "an agent is busy".
+// Done is reported only when the last task is checked while open.
+func (m Model) programStatus() *tea.ProgramStatus {
+	done, total := m.doc.Progress(m.sec)
+	ps := &tea.ProgramStatus{
+		App:     "plan",
+		Title:   m.title(),
+		State:   tea.ProgramStateIdle,
+		Message: fmt.Sprintf("%d of %d tasks done", done, total),
+	}
+	if m.finished {
+		ps.State = tea.ProgramStateDone
+		ps.Message = fmt.Sprintf("All %d tasks done", total)
+	}
+	return ps
+}
+
+func (m Model) title() string {
+	title := filepath.Base(m.path)
+	if m.sec.Heading != "" {
+		title += " › " + m.sec.Heading
+	}
+	return title
 }
 
 func (m Model) render() string {
@@ -80,10 +108,7 @@ func (m Model) render() string {
 }
 
 func (m Model) header() string {
-	title := filepath.Base(m.path)
-	if m.sec.Heading != "" {
-		title += " › " + m.sec.Heading
-	}
+	title := m.title()
 	done, total := m.doc.Progress(m.sec)
 	progress := fmt.Sprintf("%d/%d", done, total)
 	if total > 0 {
@@ -115,6 +140,8 @@ func (m Model) footer() string {
 		return m.input.View()
 	case m.err != nil:
 		return errStyle.Render(truncate(m.errText(), m.width))
+	case m.notice != "":
+		return noticeStyle.Render(truncate(m.notice, m.width))
 	}
 	return dimStyle.Render(truncate(helpText, m.width))
 }

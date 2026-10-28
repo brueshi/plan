@@ -1,9 +1,11 @@
 package view
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,8 +55,9 @@ func update(t *testing.T, m Model, msg tea.Msg) Model {
 	next, cmd := m.Update(msg)
 	m = next.(Model)
 	for _, c := range flatten(cmd) {
-		if loaded, ok := c().(loadedMsg); ok {
-			m = update(t, m, loaded)
+		switch result := c().(type) {
+		case loadedMsg, sentMsg:
+			m = update(t, m, result)
 		}
 	}
 	return m
@@ -350,6 +353,80 @@ func TestScrollKeepsCursorVisible(t *testing.T) {
 	m = press(t, m, "g", "g")
 	if out := screen(m); !strings.Contains(out, "▸ [ ] task 00") {
 		t.Fatalf("top not shown:\n%s", out)
+	}
+}
+
+// fakeAgent stands in for the rex CLI with one claude pane beside
+// the view, and records what gets typed into it.
+func fakeAgent(state string, typed *[][]string) func(context.Context, ...string) ([]byte, error) {
+	return func(_ context.Context, args ...string) ([]byte, error) {
+		switch {
+		case args[0] == "block" && args[1] == "ls":
+			return []byte(`{"blocks":[{"block_id":"self","window_id":"w"},{"block_id":"agent","window_id":"w"}]}`), nil
+		case args[0] == "block" && args[1] == "call":
+			if slices.Contains(args, "agent") {
+				return []byte(`{"records":[{"state":"` + state + `","effective_app":"claude-code","updated_at":"2026-10-28T10:00:00Z"}]}`), nil
+			}
+			return []byte(`{"records":[]}`), nil
+		}
+		*typed = append(*typed, args)
+		return nil, nil
+	}
+}
+
+func TestSendToAgent(t *testing.T) {
+	m, path := newModel(t, "## Rollout\n- [ ] A\n- [ ] Ship it\n", "Rollout")
+	var typed [][]string
+	m.rexSession, m.rexBlock, m.runRex = "s", "self", fakeAgent("idle", &typed)
+
+	m = press(t, m, "j", "s")
+	want := "Work on this task from the plan at " + path + "#Rollout: Ship it"
+	if len(typed) != 2 || typed[0][len(typed[0])-1] != want || typed[1][len(typed[1])-1] != "enter" {
+		t.Fatalf("typed %q, want the message then enter", typed)
+	}
+	if !strings.Contains(screen(m), "Sent to claude: Ship it") {
+		t.Fatalf("no confirmation:\n%s", screen(m))
+	}
+}
+
+func TestSendRefusesBlockedAgent(t *testing.T) {
+	m, _ := newModel(t, "- [ ] A\n", "")
+	var typed [][]string
+	m.rexSession, m.rexBlock, m.runRex = "s", "self", fakeAgent("blocked", &typed)
+
+	m = press(t, m, "s")
+	if len(typed) != 0 || !strings.Contains(screen(m), "waiting for an answer") {
+		t.Fatalf("typed %q into a blocked agent:\n%s", typed, screen(m))
+	}
+}
+
+func TestSendOutsideRex(t *testing.T) {
+	m, _ := newModel(t, "- [ ] A\n", "")
+	m.rexSession = ""
+	if m = press(t, m, "s"); !strings.Contains(screen(m), "not running in Rex") {
+		t.Fatalf("no error:\n%s", screen(m))
+	}
+}
+
+func TestProgramStatus(t *testing.T) {
+	m, _ := newModel(t, "- [x] A\n", "")
+	if ps := m.View().ProgramStatus; ps.State != tea.ProgramStateIdle {
+		t.Fatalf("opening a finished plan reported %q, want idle", ps.State)
+	}
+
+	m, _ = newModel(t, "- [x] A\n- [ ] B\n", "")
+	ps := m.View().ProgramStatus
+	if ps.State != tea.ProgramStateIdle || ps.Message != "1 of 2 tasks done" || ps.App != "plan" {
+		t.Fatalf("in progress: %+v", ps)
+	}
+
+	m = press(t, m, "j", "space")
+	if ps := m.View().ProgramStatus; ps.State != tea.ProgramStateDone || ps.Message != "All 2 tasks done" {
+		t.Fatalf("after the last task: %+v", ps)
+	}
+	m = press(t, m, "space")
+	if ps := m.View().ProgramStatus; ps.State != tea.ProgramStateIdle {
+		t.Fatalf("reopening a task: %+v", ps)
 	}
 }
 

@@ -5,48 +5,89 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/brueshi/plan/internal/active"
 	"github.com/brueshi/plan/internal/view"
 )
 
-const defaultPlan = "PLAN.md"
+const usage = `usage:
+  plan [view] [FILE[#HEADING]]  show a checklist
+  plan use FILE[#HEADING]       make it this Rex session's active plan
+  plan new TITLE                start a scratch plan and make it active
+  plan which                    print the plan that plan would show
 
-const usage = `usage: plan [view] [FILE[#HEADING]]
-
-Shows the checklist in FILE, or in PLAN.md when FILE is left out.
-#HEADING narrows it to the tasks under that heading, matched by its
-text or by its GitHub anchor, such as docs/design.md#rollout-plan.`
+With no FILE, plan shows this session's active plan, or PLAN.md at
+the root of the current repo. #HEADING narrows a file to the tasks
+under one heading, matched by its text or by its GitHub anchor.`
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "plan:", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
-	if len(args) > 0 && args[0] == "view" {
-		args = args[1:]
+func run(args []string, stdout io.Writer) error {
+	cmd := "view"
+	if len(args) > 0 {
+		switch args[0] {
+		case "view", "use", "new", "which":
+			cmd, args = args[0], args[1:]
+		case "-h", "--help", "help":
+			fmt.Fprintln(stdout, usage)
+			return nil
+		}
 	}
-	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-		fmt.Println(usage)
+	session := os.Getenv("REX_SESSION")
+
+	switch cmd {
+	case "use":
+		if len(args) != 1 {
+			return errors.New("use takes one FILE[#HEADING]\n" + usage)
+		}
+		t := active.Parse(args[0])
+		if err := active.Use(session, t); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "active plan:", t)
+		return nil
+
+	case "new":
+		if len(args) == 0 {
+			return errors.New("new needs a title\n" + usage)
+		}
+		path, err := active.NewScratch(strings.Join(args, " "), time.Now())
+		if err != nil {
+			return err
+		}
+		if session != "" {
+			if err := active.Use(session, active.Target{Path: path}); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintln(stdout, path)
+		return nil
+
+	case "which":
+		t, err := resolve(session, args)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, t)
 		return nil
 	}
-	if len(args) > 1 {
-		return errors.New("too many arguments\n" + usage)
-	}
 
-	target := defaultPlan
-	if len(args) == 1 {
-		target = args[0]
+	t, err := resolve(session, args)
+	if err != nil {
+		return err
 	}
-	path, section := splitTarget(target)
-
-	m, err := view.New(path, section)
+	m, err := view.New(t.Path, t.Section)
 	if err != nil {
 		return err
 	}
@@ -54,15 +95,24 @@ func run(args []string) error {
 	return err
 }
 
-// splitTarget separates FILE#HEADING. A file whose own
-// name contains # is opened whole.
-func splitTarget(target string) (path, section string) {
-	if _, err := os.Stat(target); err == nil {
-		return target, ""
+func resolve(session string, args []string) (active.Target, error) {
+	switch len(args) {
+	case 0:
+	case 1:
+		return active.Parse(args[0]), nil
+	default:
+		return active.Target{}, errors.New("too many arguments\n" + usage)
 	}
-	i := strings.LastIndex(target, "#")
-	if i < 0 {
-		return target, ""
+	dir, err := os.Getwd()
+	if err != nil {
+		return active.Target{}, err
 	}
-	return target[:i], target[i+1:]
+	t, err := active.Resolve(session, dir)
+	if errors.Is(err, active.ErrNoPlan) {
+		return t, errors.New(`no plan for this session or repo. Start one with:
+  plan new "Title"          a scratch plan
+  plan use FILE[#HEADING]   a plan in an existing file
+  or create PLAN.md at the repo root`)
+	}
+	return t, err
 }
