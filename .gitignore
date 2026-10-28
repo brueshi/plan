@@ -1,0 +1,12 @@
+# Build output
+/plan
+/dist/
+*.test
+coverage.out
+
+# Local environment
+.env
+.env.*
+
+# macOS
+.DS_Store
